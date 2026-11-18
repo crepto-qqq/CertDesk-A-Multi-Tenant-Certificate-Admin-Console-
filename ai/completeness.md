@@ -14,7 +14,9 @@
 
 ## Follow-up Codex evidence
 
-The indexed JSONL files in [sessions](sessions) use the completed local workers' native Codex activity. They preserve timestamps, model identifiers, project messages, tool inputs and outputs, and observed errors. The worker logs duplicate inherited parent history. The filtered files omit that duplicate history, internal account and runtime records, injected system and developer content, and private reasoning. Windows profile paths use narrow `[REDACTED: local Windows profile path]` replacements. The ongoing follow-up parent thread still needs its own export.
+The indexed JSONL files in [sessions](sessions) use native Codex activity. They preserve timestamps, model identifiers, project messages, tool inputs and outputs, and observed errors. The filtered worker files omit duplicated parent history. The filtered files also omit internal account and runtime records, injected system and developer content, and private reasoning. Personal profile prefixes and email addresses are narrowly redacted where present.
+
+The follow-up parent export is a snapshot through `2026-11-18T10:29:06.353Z`, and the packaging worker export ends after its completed first turn at `2026-11-18T10:11:21.880Z`. Their remaining delivery activity falls after those cutoffs. The delivery verification worker's completed turn is indexed separately. The original Work session and any other earlier sessions without linked exports remain incomplete.
 
 ## Candidate-only confirmations before submission
 

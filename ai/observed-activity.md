@@ -103,3 +103,18 @@ On 2026-11-18 at approximately 10:10 UTC, the root follow-up session ran `.venv/
 The first in-process snapshot test shared an application context between the nested Flask clients and failed Windows temporary database cleanup. The verifier gave the writer a separate thread and both loopback HTTP and quick in-process runs then passed. The first Chromium run hit an ambiguous text selector. The browser worker scoped the selector and reran the checks successfully.
 
 The fixes and reproducible check are in commit `853f75f5ce2972e325d11ac679cee4ee43c7d761`. Flask and Werkzeug were updated using the maintainers' [Flask 3.1.3](https://flask.palletsprojects.com/en/stable/changes/#version-3-1-3) and [Werkzeug 3.1.9](https://werkzeug.palletsprojects.com/en/stable/changes/#version-3-1-9) release notes.
+
+## Final delivery verification
+
+The final checks ran against application revision `c99b417955c3f872578994556f947ba6c2744a59` on 2026-11-18, around 10:18–10:26 UTC. The root used disposable SQLite databases and loopback HTTP. Delivery worker `01a1ee30-6d7f-7382-8d66-e63ba1e82743` verified the documented commands from a clean extraction of the pushed revision.
+
+| Check | Observed result |
+| --- | --- |
+| Clean startup and README | `python run.py` bootstrapped dependencies and demo data at the documented port in approximately 17.1 seconds. HTML, bundled Vue and the seeded API returned 200. The README covers every A1–A7 scenario. The independent seed command produced exactly 100,000 East certificates without modifying the default database. |
+| Reproducible verification | `.venv/Scripts/python.exe verify.py` exited 0 and passed A1–A7. The clean checkout's two filtered exports contained 99,999 rows with identical bytes and took 0.610 and 0.594 seconds. The list completed in 0.078 seconds during the first export. The intentionally injected rollback error is expected. |
+| Tenant isolation | Bob's detail, revocation and issuance attempts for an East resource returned the same 404 status, type and body as an absent resource. Bob's East search yielded an empty list and header-only CSV. Rejected operations made no writes. |
+| Issuance and retry | Two sequential and two concurrent same-key calls were tested on separate fresh databases. Each run added one operation, certificate and issuance audit. Only Sam was issued a certificate. Alex and Jordan reported `already_certified` and `incomplete`. Changing course or payload returned 409 with all relevant database rows unchanged. |
+| Local dates and compatibility | HTTP checks passed at both Sydney daylight-saving changes and for Perth local dates. The previous and current Flask versions shared a test SQLite database. An old-version issuance replayed in the new version and the old version observed a new-version revocation. A list request succeeded with the SQLite writer slot held. |
+| Boundary data | Distinct learners with the same name received distinct certificates. A learner in two completed courses received one per course. A 615-character Unicode name with punctuation and a newline round-tripped through issuance, detail, search and CSV. Empty results and ten invalid pagination/sort requests behaved as expected. |
+
+At final packaging the candidate reported completing Section 6. File metadata confirmed that `written-answers.md` was saved and nonempty. The assistant checked the file's metadata only.
