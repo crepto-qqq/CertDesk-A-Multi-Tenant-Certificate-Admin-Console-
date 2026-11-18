@@ -1,6 +1,6 @@
 """SQLite connection management, tenant-scoped certificate reads and demo fixtures."""
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -26,6 +26,18 @@ def tenant_query(conn, tenant_id, sql, **params):
     if ":tenant_id" not in sql:
         raise ValueError("Tenant-scoped SQL must bind :tenant_id")
     return conn.execute(sql, {**params, "tenant_id": tenant_id})
+
+
+@contextmanager
+def read_snapshot(conn):
+    if conn.in_transaction:
+        yield
+        return
+    conn.execute("BEGIN")
+    try:
+        yield
+    finally:
+        conn.rollback()  # End the read-only snapshot.
 
 
 def initialize(path):
@@ -109,16 +121,17 @@ def _fields(row):
 
 
 def certificate(conn, tenant_id, cert_id):
-    row = tenant_query(conn, tenant_id, _COLUMNS + _JOIN + " AND c.id = :cert_id",
-                       cert_id=cert_id).fetchone()
-    if not row:
-        return None
-    item = _fields(row)
-    events = tenant_query(conn, tenant_id, """SELECT actor_email, action, created_at
-        FROM audit_events WHERE tenant_id = :tenant_id AND certificate_id = :cert_id
-        ORDER BY id""", cert_id=cert_id)
-    item["audit"] = [{**dict(event), "local_datetime": local_datetime(event["created_at"], row["timezone"])}
-                     for event in events]
+    with read_snapshot(conn):
+        row = tenant_query(conn, tenant_id, _COLUMNS + _JOIN + " AND c.id = :cert_id",
+                           cert_id=cert_id).fetchone()
+        if not row:
+            return None
+        item = _fields(row)
+        events = tenant_query(conn, tenant_id, """SELECT actor_email, action, created_at
+            FROM audit_events WHERE tenant_id = :tenant_id AND certificate_id = :cert_id
+            ORDER BY id""", cert_id=cert_id)
+        item["audit"] = [{**dict(event), "local_datetime": local_datetime(event["created_at"], row["timezone"])}
+                         for event in events]
     return item
 
 
@@ -137,18 +150,11 @@ def _filter_and_order(search, sort, direction):
 
 def list_certificates(conn, tenant_id, search, sort, direction, page, page_size):
     filters, order, params = _filter_and_order(search, sort, direction)
-    # Keep total and page in one read snapshot even during a concurrent issuance.
-    own_transaction = not conn.in_transaction
-    if own_transaction:
-        conn.execute("BEGIN")
-    try:
+    with read_snapshot(conn):
         total = tenant_query(conn, tenant_id, "SELECT count(*)" + filters, **params).fetchone()[0]
         rows = tenant_query(conn, tenant_id, _COLUMNS + filters + order + " LIMIT :size OFFSET :offset",
                             **params, size=page_size, offset=(page - 1) * page_size)
         return {"items": [_fields(row) for row in rows], "total": total}
-    finally:
-        if own_transaction:
-            conn.rollback()  # End the read-only snapshot.
 
 
 def export_rows(conn, tenant_id, search, sort, direction):

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CertDesk browser acceptance checks</title>
+<style>
+body {font: 1rem/1.55 system-ui, sans-serif; max-width: 58rem; margin: 4rem auto; padding: 0 1.5rem; color: #152138; background: #f8fafc}
+h1 {font-size: 1.9rem; margin-bottom: .3rem} p {margin-top: .4rem}
+button {font: inherit; font-weight: 600; padding: .55rem 1.2rem; background: #174797; color: white; border: 0; border-radius: .4rem; cursor: pointer}
+button:disabled {opacity: .55} li {padding: .3rem; overflow-wrap: anywhere}
+</style></head><body>
+<h1>CertDesk browser acceptance checks</h1>
+<p>Each run starts with a fresh temporary database containing 100,000 East certificates.</p>
+<button id="run" type="button">Run checks</button>
+<p id="state" role="status">Ready.</p>
+<ol id="results" aria-live="polite"></ol>
+<script>
+const state = document.getElementById("state");
+const results = document.getElementById("results");
+const button = document.getElementById("run");
+const alice = "alice@east.test";
+const bob = "bob@west.test";
+const seconds = ms => (ms / 1000).toFixed(3) + " s";
+
+function assert(test, message) {
+  if (!test) throw new Error(message);
+}
+function report(message) {
+  const item = document.createElement("li");
+  item.textContent = message;
+  results.append(item);
+}
+async function sha256(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function execute(run) {
+  async function call(path, {actor = alice, method = "GET", body, key, headers = {}, status = 200} = {}) {
+    const opts = {method, headers: {"X-Actor": actor, ...headers}, cache: "no-store"};
+    if (body !== undefined) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    if (key) opts.headers["Idempotency-Key"] = key;
+    const response = await fetch(run.base + "/api" + path, opts);
+    assert(response.status === status, path + " returned " + response.status + ", expected " + status);
+    return response;
+  }
+  const issue = (key, actor = alice, status = 200) =>
+    call("/bulk-issue", {actor, method: "POST", body: {course_id: 1}, key, status});
+  const list = await (await call("/certificates?q=alex", {actor: bob})).json();
+  assert(list.total === 1 && list.items[0].serial === "WEST-0001", "Unexpected West list.");
+  await call("/certificates/1", {actor: bob, status: 404});
+  await issue("forbidden", bob, 404);
+  const westCsv = await (await call("/certificates/export.csv?q=alex", {actor: bob})).text();
+  assert(westCsv.includes("WEST-0001") && !westCsv.includes("EAST-"), "Unexpected West CSV.");
+  const eastBefore = await (await call("/certificates?page_size=1")).json();
+  assert(eastBefore.total === 100000, "Cross-tenant request changed East certificate count.");
+  report("PASS A1 · Bob sees only West's Alex Lee. East detail and bulk issue returned 404.");
+
+  const key = crypto.randomUUID();
+  const [first, second] = await Promise.all([issue(key).then(r => r.json()), issue(key).then(r => r.json())]);
+  const replay = await (await issue(key)).json();
+  const stringify = JSON.stringify;
+  assert(stringify(first) === stringify(second) && stringify(first) === stringify(replay), "Operation results differ.");
+  assert(first.counts.issued === 1 && first.counts.skipped === 2 && first.counts.failed === 0, "Incorrect outcomes.");
+  const issued = first.outcomes.find(r => r.outcome === "issued");
+  const detail = await (await call("/certificates/" + issued.certificate_id)).json();
+  assert(detail.audit.length === 1 && detail.audit[0].action === "ISSUED" && detail.audit[0].actor_email === alice,
+         "Expected one issuance audit for Alice.");
+  report("PASS A2 · Two parallel POSTs and a retry returned one operation. One certificate and one issuance audit.");
+
+  const csvPath = "/certificates/export.csv?q=bEnCh-&sort=learner&direction=asc";
+  let start = performance.now();
+  const response = await call(csvPath, {headers: {"X-Check-Stream": "1"}});
+  const reader = response.body.getReader();
+  const firstChunk = await reader.read();
+  assert(!firstChunk.done && firstChunk.value.length > 0, "Export did not stream a first chunk.");
+  const parts = [firstChunk.value];
+  const listStart = performance.now();
+  const concurrent = await call("/certificates?page_size=1", {headers: {"X-Check-Overlap": "1"}});
+  const during = await concurrent.json();
+  const listMs = performance.now() - listStart;
+  assert(concurrent.headers.get("X-Export-In-Progress") === "1", "List failed to overlap the server's open export.");
+  assert(during.total === 100001 && during.items.length === 1, "Concurrent list returned unexpected rows.");
+  for (;;) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    parts.push(value);
+  }
+  const firstMs = performance.now() - start;
+  const hash1 = await sha256(await new Blob(parts).arrayBuffer());
+  start = performance.now();
+  const other = await (await call(csvPath)).arrayBuffer();
+  const secondMs = performance.now() - start;
+  const hash2 = await sha256(other);
+  assert(firstMs < 60000 && secondMs < 60000, "An export exceeded 60 seconds.");
+  assert(hash1 === run.digest && hash2 === run.digest, "CSV bytes differ from independently ordered reference data.");
+  report("PASS A6 · Both exports match all " + run.count.toLocaleString("en-US") + " reference rows in order. " +
+         seconds(firstMs) + " and " + seconds(secondMs) + ". Concurrent list completed in " + seconds(listMs) +
+         " while the server held the first export open.");
+  report("CSV SHA-256 · " + hash1);
+}
+
+button.addEventListener("click", async () => {
+  button.disabled = true;
+  results.replaceChildren();
+  state.textContent = "Running browser HTTP checks…";
+  let run;
+  try {
+    const response = await fetch("/checks/start", {method: "POST"});
+    assert(response.ok, "Could not initialize a fresh verification database.");
+    run = await response.json();
+    await execute(run);
+    state.textContent = "All browser HTTP checks passed.";
+  } catch (error) {
+    state.textContent = "Verification failed.";
+    report(error.message);
+  } finally {
+    if (run) {
+      const token = run.base.split("/").pop();
+      await fetch("/checks/finish/" + token, {method: "POST"}).catch(() => {});
+    }
+    button.disabled = false;
+  }
+});
+</script></body></html>

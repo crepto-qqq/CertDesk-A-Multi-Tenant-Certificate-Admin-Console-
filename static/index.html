@@ -114,7 +114,7 @@
       </div>
       <div v-else-if="modal === 'detail'" class="dialog-body">
         <p v-if="detailLoading" role="status">Loading certificate…</p>
-        <div v-else-if="detailError" class="notice error" role="alert">{{ detailError }} <button class="link-button" @click="openDetail(detailId)">Retry</button></div>
+        <div v-else-if="detailError" class="notice error" role="alert">{{ detailError }} <button class="link-button" @click="loadDetail">Retry</button></div>
         <template v-else-if="detail">
           <div class="detail-name"><strong>{{ detail.learner }}</strong><span class="badge" :class="detail.status.toLowerCase()">{{ titleCase(detail.status) }}</span></div>
           <dl>
@@ -127,7 +127,6 @@
           </li></ul>
           <p v-else class="description">No events recorded.</p>
           <p v-if="revokeError" class="notice error" role="alert">{{ revokeError }}</p>
-          <p v-if="revokeSuccess" class="notice success" role="status">Certificate revoked.</p>
           <section v-if="detail.status === 'ACTIVE'" class="revoke-panel">
             <template v-if="confirming">
               <strong>Revoke this certificate?</strong><p>Future bulk issuance will skip this learner for this course.</p>
@@ -136,6 +135,7 @@
             <button v-else class="button danger-outline" @click="confirming=true">Revoke certificate</button>
           </section>
         </template>
+        <p v-if="revokeSuccess" class="notice success" role="status">Certificate revoked.</p>
       </div>
     </dialog>
   </div>

@@ -48,6 +48,12 @@ def create_app(path):
             if g.actor is None:
                 raise writes.APIError(401, "Select a valid demo administrator.")
 
+    @app.after_request
+    def prevent_api_caching(response):
+        if request.path.startswith("/api/"):
+            response.cache_control.no_store = True
+        return response
+
     @app.teardown_request
     def close_connection(_error):
         connection = g.pop("connection", None)
