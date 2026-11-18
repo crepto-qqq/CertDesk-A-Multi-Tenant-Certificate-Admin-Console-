@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#153f38">
+  <title>CertDesk · Certificates</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script defer src="/vendor/vue.global.prod.js"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <div id="app" v-cloak>
+    <header class="topbar">
+      <div class="topbar-content">
+        <a class="brand" href="./" aria-label="CertDesk home"><span class="seal" aria-hidden="true"></span>CertDesk</a>
+        <div class="actor-control">
+          <label for="actor">Acting as</label>
+          <select id="actor" :value="actor" @change="changeActor($event.target.value)" :disabled="bulkBusy || revoking">
+            <option v-for="person in actors" :key="person.email" :value="person.email">{{ person.email }}</option>
+          </select>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="page-heading">
+        <div>
+          <p class="tenant"><span aria-hidden="true"></span>{{ currentActor.tenant }} tenant <b>·</b> {{ currentActor.zone }}</p>
+          <h1>Certificates</h1>
+        </div>
+        <div class="actions">
+          <button class="button secondary" @click="exportCsv" :disabled="exporting">
+            <span class="download-icon" aria-hidden="true">↓</span>{{ exporting ? 'Exporting…' : 'Export CSV' }}
+          </button>
+          <button class="button primary" @click="openBulk"><span aria-hidden="true">＋</span> Bulk issue</button>
+        </div>
+      </section>
+
+      <p class="error notice" v-if="exportError" role="alert">{{ exportError }}</p>
+      <section class="register" aria-label="Certificate register">
+        <div class="tools">
+          <label class="search-box">
+            <span class="magnifier" aria-hidden="true"></span>
+            <span class="sr-only">Search by learner name or serial number</span>
+            <input type="search" v-model="search" placeholder="Search learner or serial number" @keydown.enter="applySearch">
+          </label>
+          <div class="sort-controls">
+            <label for="sort">Sort by</label>
+            <select id="sort" v-model="sort" @change="resetPage">
+              <option v-for="option in sortFields" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <button class="direction" @click="toggleDirection" :aria-label="direction === 'asc' ? 'Sort descending' : 'Sort ascending'">
+              <span aria-hidden="true">{{ direction === 'asc' ? '↑' : '↓' }}</span> {{ direction === 'asc' ? 'Ascending' : 'Descending' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="listError" class="state" role="alert"><strong>Couldn’t load certificates</strong><p>{{ listError }}</p><button class="button secondary" @click="loadList">Retry</button></div>
+        <div v-else-if="loading" class="state" role="status">Loading certificates…</div>
+        <div v-else-if="!items.length" class="state"><strong>{{ appliedSearch ? 'No matching certificates' : 'No certificates yet' }}</strong>
+          <p>{{ appliedSearch ? 'Try another learner name or serial number.' : 'Choose a course to issue certificates to eligible learners.' }}</p>
+          <button v-if="appliedSearch" class="button secondary" @click="clearSearch">Clear search</button>
+        </div>
+        <div v-else class="table-wrap" tabindex="0" aria-label="Certificates">
+          <table>
+            <thead><tr><th scope="col">Learner</th><th scope="col">Course</th><th scope="col">Serial number</th><th scope="col">Issued locally</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Certificate details</span></th></tr></thead>
+            <tbody><tr v-for="item in items" :key="item.id">
+              <td class="learner">{{ item.learner }}</td><td>{{ item.course }}</td><td class="serial">{{ item.serial }}</td>
+              <td class="date">{{ localText(item.local_datetime) }}</td><td><span class="badge" :class="item.status.toLowerCase()">{{ titleCase(item.status) }}</span></td>
+              <td><button class="link-button" @click="openDetail(item.id)" :aria-label="'View certificate ' + item.serial">View <span aria-hidden="true">↗</span></button></td>
+            </tr></tbody>
+          </table>
+        </div>
+        <footer class="pagination">
+          <span role="status">{{ loading || listError ? '—' : (total ? ((page-1)*pageSize+1) + '–' + Math.min(page*pageSize,total) + ' of ' + total.toLocaleString() : '0 certificates') }}</span>
+          <div class="page-controls">
+            <label for="rows">Rows per page</label>
+            <select id="rows" v-model.number="pageSize" @change="resetPage"><option :value="10">10</option><option :value="20">20</option><option :value="50">50</option></select>
+            <button @click="movePage(-1)" :disabled="loading || !!listError || page <= 1" aria-label="Previous page">‹</button>
+            <button @click="movePage(1)" :disabled="loading || !!listError || page * pageSize >= total" aria-label="Next page">›</button>
+          </div>
+        </footer>
+      </section>
+    </main>
+
+    <dialog ref="dialog" aria-labelledby="dialog-title" @close="onDialogClose" @cancel="handleCancel">
+      <div class="dialog-header">
+        <h2 id="dialog-title">{{ modal === 'bulk' ? 'Bulk issue certificates' : 'Certificate details' }}</h2>
+        <button type="button" class="close" @click="closeDialog" aria-label="Close dialog" :disabled="bulkBusy || revoking">×</button>
+      </div>
+      <div v-if="modal === 'bulk'" class="dialog-body">
+        <p class="description">Issue certificates to every eligible learner enrolled in the selected course.</p>
+        <label class="stacked" for="course">Course</label>
+        <select id="course" class="course-select" v-model="courseId" @change="clearBulkResult" :disabled="bulkBusy || coursesLoading || !courses.length">
+          <option :value="null" disabled>{{ coursesLoading ? 'Loading courses…' : 'Choose a course' }}</option>
+          <option v-for="course in courses" :key="course.id" :value="course.id">{{ course.title }}</option>
+        </select>
+        <div v-if="coursesError" class="notice error" role="alert">{{ coursesError }} <button class="link-button" @click="loadCourses">Retry</button></div>
+        <p v-else-if="!coursesLoading && !courses.length">No courses available.</p>
+        <div v-if="bulkError" class="notice error" role="alert">{{ bulkError }}</div>
+        <div class="bulk-action"><button class="button primary" :disabled="!courseId || bulkBusy || coursesLoading" @click="issue">
+          {{ bulkBusy ? 'Issuing…' : retryPending ? 'Retry issuance' : 'Issue certificates' }}
+        </button></div>
+        <p v-if="bulkBusy" class="description" role="status">Issuance in progress…</p>
+        <section class="results" v-if="bulkResult" aria-live="polite">
+          <h3>Issuance results</h3>
+          <p class="description">Operation #{{ bulkResult.operation_id }} {{ bulkResult.status }}. {{ resultSummary }}</p>
+          <ul class="outcomes"><li v-for="(row,i) in bulkResult.outcomes" :key="i">
+            <div><strong>{{ row.learner }}</strong><small v-if="row.reason">{{ reasonText(row.reason) }}</small></div>
+            <span class="badge" :class="row.outcome">{{ titleCase(row.outcome) }}</span>
+          </li></ul>
+        </section>
+      </div>
+      <div v-else-if="modal === 'detail'" class="dialog-body">
+        <p v-if="detailLoading" role="status">Loading certificate…</p>
+        <div v-else-if="detailError" class="notice error" role="alert">{{ detailError }} <button class="link-button" @click="openDetail(detailId)">Retry</button></div>
+        <template v-else-if="detail">
+          <div class="detail-name"><strong>{{ detail.learner }}</strong><span class="badge" :class="detail.status.toLowerCase()">{{ titleCase(detail.status) }}</span></div>
+          <dl>
+            <dt>Course</dt><dd>{{ detail.course }}</dd><dt>Serial number</dt><dd class="serial">{{ detail.serial }}</dd>
+            <dt>Issued locally</dt><dd>{{ localText(detail.local_datetime) }}<small>{{ currentActor.zone }}</small></dd>
+          </dl>
+          <h3>Audit history</h3>
+          <ul v-if="detail.audit?.length" class="audit"><li v-for="(event,i) in detail.audit" :key="event.id || i">
+            <strong>{{ titleCase(event.action) }}</strong><span>{{ event.actor_email }}</span><small>{{ event.local_datetime ? localText(event.local_datetime) : event.created_at }}</small>
+          </li></ul>
+          <p v-else class="description">No events recorded.</p>
+          <p v-if="revokeError" class="notice error" role="alert">{{ revokeError }}</p>
+          <p v-if="revokeSuccess" class="notice success" role="status">Certificate revoked.</p>
+          <section v-if="detail.status === 'ACTIVE'" class="revoke-panel">
+            <template v-if="confirming">
+              <strong>Revoke this certificate?</strong><p>Future bulk issuance will skip this learner for this course.</p>
+              <div class="actions"><button class="button secondary" @click="confirming=false" :disabled="revoking">Cancel</button><button class="button danger" @click="revoke" :disabled="revoking">{{ revoking ? 'Revoking…' : 'Confirm revocation' }}</button></div>
+            </template>
+            <button v-else class="button danger-outline" @click="confirming=true">Revoke certificate</button>
+          </section>
+        </template>
+      </div>
+    </dialog>
+  </div>
+  <noscript>Enable JavaScript to open the certificate console.</noscript>
+</body>
+</html>
